@@ -118,12 +118,12 @@ namespace dg::flush_on_cap_tlb{
 
     __device__ inline auto dg_compare_exchange_strong(unsigned long long int& obj, unsigned long long int cmp, unsigned long long int val, const std::memory_order) noexcept -> bool{
 
-        return atomic_CAS(&obj, cmp, val) == cmp;
+        return atomicCAS(&obj, cmp, val) == cmp;
     }
 
     __device__ inline auto dg_compare_exchange_strong(unsigned short int& obj, unsigned short int cmp, unsigned short int val, const std::memory_order) noexcept -> bool{
 
-        return atomic_CAS(&obj, cmp, val) == cmp;
+        return atomicCAS(&obj, cmp, val) == cmp;
     }
 
     __device__ inline void dg_atomic_thread_fence(const std::memory_order mem_order) noexcept{
@@ -148,13 +148,13 @@ namespace dg::flush_on_cap_tlb{
     }
 
     template <class T>
-    inline auto dg_atomic_fetch_add(std::atomic<T>& obj, T val, const std::memory_order mem_order) noexcept -> int{
+    inline auto dg_atomic_fetch_add(std::atomic<T>& obj, T val, const std::memory_order mem_order) noexcept -> T{
 
         return obj.fetch_add(val, mem_order);
     }
 
     template <class T>
-    inline auto dg_atomic_fetch_sub(std::atomic<T>& obj, T val, const std::memory_order mem_order) noexcept -> int{
+    inline auto dg_atomic_fetch_sub(std::atomic<T>& obj, T val, const std::memory_order mem_order) noexcept -> T{
 
         return obj.fetch_sub(val, mem_order);
     }
@@ -170,7 +170,7 @@ namespace dg::flush_on_cap_tlb{
     }
 
     template <class T>
-    inline auto dg_atomic_exchange(std::atomic<T>& obj, T val, const std::memory_order mem_order) noexcept -> int{
+    inline auto dg_atomic_exchange(std::atomic<T>& obj, T val, const std::memory_order mem_order) noexcept -> T{
 
         return obj.exchange(val, mem_order);
     }
