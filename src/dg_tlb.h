@@ -525,7 +525,7 @@ namespace dg::flush_on_cap_tlb{
         }
 
         for (size_t i = 0; i < translatee_page_sz; ++i){
-            translatee_pages[i].addr =  static_cast<char *>(translator_addr) + (PAGE_SZ * i); 
+            translatee_pages[i].addr =  static_cast<char *>(translatee_addr) + (PAGE_SZ * i); 
             dg_atomic_flag_clear(translatee_pages[i].is_acquired, std::memory_order_seq_cst);
         }
 
