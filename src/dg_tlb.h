@@ -131,7 +131,6 @@ namespace dg::flush_on_cap_tlb{
         (void) mem_order;
     }
 
-  
     #else
 
     using dg_atomic_flag_type = std::atomic_flag;
@@ -191,9 +190,9 @@ namespace dg::flush_on_cap_tlb{
     struct no_page_found: std::exception{}; 
 
     struct Config{
-        void * translator_addr;
+        void * translator_addr; //should be origined from char * (avoid UB - pointer arithmetic on std-qualified char array - whose pointer is obtained from new[] operation)
         size_t translator_sz;
-        void * translatee_addr; 
+        void * translatee_addr; //should be origined from char * (avoid UB - pointer arithmetic on std-qualified char array - whose pointer is obtained from new[] operation) 
         size_t translatee_sz;
         mem_transfer_device_t virtual_to_physical_transfer_device;
         mem_transfer_device_t physical_to_virtual_transfer_device;
@@ -498,42 +497,49 @@ namespace dg::flush_on_cap_tlb{
         }
     }
 
+    //wait + sync all pages. the exit of this function guarantees the up-to-date as of at least __function_invoked_time__ ...
+    inline void virtual_page_sync_all() noexcept{
+
+        for (size_t i = 0; i < table.virtual_page_list_sz; ++i){
+            virtual_page_sync(i);
+        }
+    }
+    
     //--user-interface--
 
-    //should be invoked once - at the beginning of the program. 
-    inline void init(void * translator_addr, size_t translator_sz,
-                     void * translatee_addr, size_t translatee_sz,
+    //should be invoked once - at the beginning of the program
+    inline void init(char * translator_addr, size_t translator_sz,
+                     char * translatee_addr, size_t translatee_sz,
                      mem_transfer_device_t virtual_to_physical_transfer_device,
                      mem_transfer_device_t physical_to_virtual_transfer_device){
                     
-        if (translator_sz % PAGE_SZ != 0u || translator_sz == 0u){
+        if (translator_sz % PAGE_SZ != 0u || translator_sz == 0u || reinterpret_cast<uintptr_t>(translator_addr) % PAGE_SZ != 0u || reinterpret_cast<uintptr_t>(translator_addr) / PAGE_SZ == 0u){ //page_offs != 0, bad practice - but necessary for remapping nullptr
             std::abort();
         }
 
-        if (translatee_sz % PAGE_SZ != 0u || translatee_sz == 0u){
+        if (translatee_sz % PAGE_SZ != 0u || translatee_sz == 0u || reinterpret_cast<uintptr_t>(translatee_addr) % PAGE_SZ != 0u || reinterpret_cast<uintptr_t>(translatee_addr) / PAGE_SZ == 0u){ //page_offs != 0, bad practice - but necessary for remapping nullptr
             std::abort();
         }
 
-        size_t translator_page_sz   = translator_sz / PAGE_SZ;
-        size_t translatee_page_sz   = translatee_sz / PAGE_SZ;
+        size_t translator_page_count    = translator_sz / PAGE_SZ;
+        auto translator_pages           = std::make_unique<VirtualPageState[]>(translator_page_count);
+        size_t translatee_page_count    = translatee_sz / PAGE_SZ;
+        auto translatee_pages           = std::make_unique<PhysicalPageState[]>(translatee_page_count);
 
-        auto translator_pages       = std::make_unique<VirtualPageState[]>(translator_page_sz);
-        auto translatee_pages       = std::make_unique<PhysicalPageState[]>(translatee_page_sz);
-
-        for (size_t i = 0; i < translator_page_sz; ++i){
+        for (size_t i = 0; i < translator_page_count; ++i){
             dg_atomic_exchange(translator_pages[i].state, virtual_page_null_state, std::memory_order_seq_cst);
         }
 
-        for (size_t i = 0; i < translatee_page_sz; ++i){
-            translatee_pages[i].addr =  static_cast<char *>(translatee_addr) + (PAGE_SZ * i); 
+        for (size_t i = 0; i < translatee_page_count; ++i){
+            translatee_pages[i].addr = translatee_addr + (PAGE_SZ * i); 
             dg_atomic_flag_clear(translatee_pages[i].is_acquired, std::memory_order_seq_cst);
         }
 
         config                      = {translator_addr, translator_sz, translatee_addr, translatee_sz, virtual_to_physical_transfer_device, physical_to_virtual_transfer_device};
-        table.physical_page_list    = translatee_pages.get();
-        table.physical_page_list_sz = translatee_page_sz;
+        table.virtual_page_list_sz  = translator_page_count;
         table.virtual_page_list     = translator_pages.get();
-        table.virtual_page_list_sz  = translator_page_sz;
+        table.physical_page_list_sz = translatee_page_count;
+        table.physical_page_list    = translatee_pages.get();
 
         translator_pages.release();
         translatee_pages.release();
@@ -564,16 +570,6 @@ namespace dg::flush_on_cap_tlb{
         virtual_page_dec_ref(page_slot);
     }
 
-    inline auto safe_map(void * ptr){
-
-        void * rs           = map(ptr);
-        auto deallocator    = [](void * ptr) noexcept{
-            unmap(ptr);
-        };
-
-        return std::unique_ptr<void, decltype(deallocator)>(rs, std::move(deallocator));
-    }
-
     inline void shootdown(void * ptr) noexcept{
 
         if (!ptr){
@@ -582,11 +578,9 @@ namespace dg::flush_on_cap_tlb{
 
         size_t idx          = std::distance(static_cast<const char *>(config.translator_addr), static_cast<const char *>(ptr));
         size_t page_slot    = slot(idx, PAGE_SZ);
-        size_t page_offs    = offset(idx, PAGE_SZ);
         virtual_page_drop(page_slot);
     }
 
-    //wait + sync all pages. the exit of this function guarantees the up-to-date as of at least __function_invoked_time__ (memory-deduced-qualified (void))
     inline void sync(void * ptr) noexcept{
 
         if (!ptr){
@@ -602,6 +596,24 @@ namespace dg::flush_on_cap_tlb{
 
         virtual_page_drop_all();
     }
+
+    inline void sync() noexcept{
+
+        virtual_page_sync_all();
+    }
+
+    inline auto remap(void * old_ptr, void * old_mapped_ptr, void * new_ptr) -> void *{
+
+        //consider branchless - should be compiler's optimization work in the future(if not already now) 
+        if (slot(reinterpret_cast<uintptr_t>(old_ptr), PAGE_SZ) == slot(reinterpret_cast<uintptr_t>(new_ptr), PAGE_SZ)){ 
+            return static_cast<char *>(old_mapped_ptr) + std::distance(static_cast<const char *>(old_ptr), static_cast<const char *>(new_ptr)); //UB
+        }
+
+        void * rs = map(new_ptr);
+        unmap(old_ptr);
+        return rs;
+    }
+
 }
 
 #endif
